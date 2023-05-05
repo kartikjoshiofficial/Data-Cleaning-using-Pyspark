@@ -1,3 +1,139 @@
-Go to this link
+#importing all necessary libraries
+import pyspark
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, IntegerType, LongType, StringType, FloatType
+from pyspark.sql import SQLContext
+import re
+from pyspark.sql import functions as F
+from pyspark.sql.types import StringType
+from pyspark.sql.functions import lit
 
-file:///D:/mindtree%20assignments/TN%20case%20study/Pyspark%20Project%20Kartik.html
+#Creating a sql context variable
+sqlContext = SQLContext(sc)
+
+#Now creating a schema to give our dataframe its structure.
+bschema = StructType([ \
+    StructField("Serial_No",IntegerType(),False), \
+    StructField("District",StringType(),True), \
+    StructField("Area",StringType(),True), \
+    StructField("Production", IntegerType(), True), \
+   ])
+bambooData = spark.read.text("dbfs:/FileStore/shared_uploads/kartik62joshi@gmail.com/bamboo.txt")
+#creating the data frame for bamboo table
+bambooData = spark.read.option("delimiter","|").schema(bschema).csv("dbfs:/FileStore/shared_uploads/kartik62joshi@gmail.com/bamboo.txt")
+bambooData.show()
+#Now cleaning out the district and area field using regex
+bambooDF = bambooData.withColumn("District", F.regexp_replace(("District"), "[\\~, \\!, \\@, \\#, \\$, \\%, \\^, \\&, \\?, \\}, \\=]", ""))
+bambooData = bambooDF.withColumn("Area", F.regexp_replace(("Area"), "[^0-9]", ""))
+#Now changing the type of area field to integer
+bambooDF = bambooData.withColumn("Area",bambooData["Area"].cast(IntegerType()))
+#Now changing the type of production field to integer
+bambooDF = bambooData.withColumn("Production",bambooData["Production"].cast(IntegerType()))
+bambooDF = bambooData
+#Adding “PTY” column 
+bambooData = bambooDF.withColumn("PTY", bambooData.Production/bambooData.Area)
+bambooData.show()
+#Now rounding of the values of “PTY” column to two decimal places
+from pyspark.sql.functions import round, col
+bambooDF = bambooData.withColumn("PTY", round(col("PTY") * 100 / 5) * 5 / 100)
+#Now adding plantation type column for the easy identification of the type when we do the union of dataset.
+bambooData= bambooDF.withColumn("Plantation_Type", lit("Bamboo"))
+bambooData.show(100)
+#Now importing Tea dataset.
+tfile = spark.read.text("dbfs:/FileStore/shared_uploads/kartik62joshi@gmail.com/tea.txt")
+#Giving line separation for every fifth delimiter
+tFile = tfile.withColumn("value", F.regexp_replace(col("value"), '(.*?\\|){5}', '$0\n'))
+#Now assigning rdd to a string 
+txt = tFile.first().value
+print(txt)
+data = [d.strip().split('|') for d in txt.split("\n")]
+#filtering out the last column which occurs due to last '|'
+dat = [temp[0:5] for temp in data]
+#New schema of tea dataset 
+tschema = StructType([StructField("Serial_number", StringType(), False), 
+                      StructField("District", StringType(), False),
+                      StructField("Area", StringType(), True), 
+                      StructField("Production", StringType(), True),
+                      StructField("PTY", StringType(), True)])
+tea = spark.createDataFrame(dat[0:], schema = tschema)
+#Now Typecasting "Serial_Number","Area","Production","PTY".
+tea = tea.withColumn("Serial_number", tea.Serial_number.cast(IntegerType()))
+tea = tea.withColumn("Area", tea.Area.cast(IntegerType()))
+tea = tea.withColumn("Production", tea.Production.cast(IntegerType()))
+tea = tea.withColumn("PTY", tea.PTY.cast(FloatType()))
+#adding plantation_type column in the data frame
+tea = tea.select(col("Serial_Number"), col("District"), col("Area"), col("Production"), col("PTY"), lit("Tea").alias("Plantation_Type"))
+tea.show()
+#Making a data frame from rubber
+rubberData = spark.read.option("delimiter","|").option("inferSchema", "true").option("header","true").csv("dbfs:/FileStore/shared_uploads/kartik62joshi@gmail.com/rubber.txt")
+#Type casting "Area","Production".
+rubberDF = rubberData.withColumn("Area",rubberData["Area"].cast(IntegerType()))
+rubberDF = rubberData.withColumn("Production",rubberData["Production"].cast(IntegerType()))
+rubberDF = rubberData
+#calculating the PTY value.
+rubberData = rubberDF.withColumn("PTY", rubberData.Production/rubberData.Area)
+#Rounding of the value PTY upto two decimal places.
+rubberDF = rubberData.withColumn("PTY", round(col("PTY") * 100 / 5) * 5 / 100)
+#Adding plantation type column.
+rubberData= rubberDF.withColumn("Plantation_Type", lit("Rubber"))
+rubberData.show()
+#Now making union of all three datasets and dropping null values.
+totalDF = bambooData.union(tea).union(rubberData).filter("PTY is not null")
+#Typecasting "Production" and "Area".
+totalDF = totalDF.withColumn("Production", totalDF.Production.cast(IntegerType())).withColumn("Area", totalDF.Area.cast(IntegerType()))
+#Creating a temporary view named "Datatemp".
+totalDF.createTempView("Datatemp")
+totalDF.show(100)
+#finding the district having maximum production of bamboo.
+maxBambooDF = sqlContext.sql("SELECT District, Production FROM Datatemp WHERE Production IN (SELECT max(Production) FROM Datatemp WHERE Plantation_Type='Bamboo' )")
+maxBambooDF.show()
+#finding the district having minimum production of bamboo.
+minBambooDF = sqlContext.sql("SELECT District, Production FROM Datatemp WHERE Production IN (SELECT min(Production) FROM Datatemp WHERE Plantation_Type='Bamboo' )")
+minBambooDF.show()
+#finding the district having maximum production of Tea.
+maxTeaDF = sqlContext.sql("SELECT District, Production FROM Datatemp WHERE Production IN (SELECT max(Production) FROM Datatemp WHERE Plantation_Type='Tea' )")
+maxTeaDF.dropDuplicates().show()
+#finding the district having minimum production of Tea.
+minTeaDF = sqlContext.sql("SELECT District, Production FROM Datatemp WHERE Production IN (SELECT min(Production) FROM Datatemp WHERE Plantation_Type='Tea' )")
+minTeaDF.dropDuplicates().show()
+#finding the district having maximum production of Rubber.
+maxRubberDF = sqlContext.sql("SELECT District, Production FROM Datatemp WHERE Production IN (SELECT max(Production) FROM Datatemp WHERE Plantation_Type='Rubber' )")
+maxRubberDF.dropDuplicates().show()
+#finding the district having minimum production of Rubber.
+minRubberDF = sqlContext.sql("SELECT District, Production FROM Datatemp WHERE Production IN (SELECT min(Production) FROM Datatemp WHERE Plantation_Type='Rubber' )")
+minRubberDF.dropDuplicates().show()
+#Total area under bamboo plantataion.
+BambooArea = sqlContext.sql("SELECT sum(Area) as Total_Area FROM Datatemp WHERE Plantation_Type='Bamboo'")
+BambooArea.show()
+#Total area under Tea plantataion.
+TeaArea = sqlContext.sql("SELECT sum(Area) as Total_Area FROM Datatemp WHERE Plantation_Type='Tea'")
+TeaArea.show()
+#Total area under Rubber plantataion.
+RubberArea = sqlContext.sql("SELECT sum(Area) as Total_Area FROM Datatemp WHERE Plantation_Type='Rubber'")
+RubberArea.show()
+dfb = bambooDF.select("District", "PTY")
+dft = dfb.withColumn("PTY_Bamboo", col("PTY")).drop("PTY")
+dfb = dft
+dfb.show()
+df1 = tea.select("District","PTY")
+dft = df1.withColumn("PTY_Tea", col("PTY")).drop("PTY")
+dft.show()
+#Now joining PTY columns of tea and bamboo dataframes.
+df2 = dfb.join(dft,dfb.District ==  dft.District,"left").drop(dft.District)
+df2.show()
+df3 = rubberDF.select("District","PTY")
+dfr = df3.withColumn("PTY_Rubber", col("PTY")).drop("PTY")
+#Now joining PTY column of Rubber and making a new  dataframe named newDF.
+newDF = df2.join(dfr,df2.District ==  dfr.District,"left").drop(dfr.District)
+newDF.show()
+#Now finding the  correlation between "PTY_Rubber" and "PTY_Bamboo".
+newDF.stat.corr("PTY_Rubber", "PTY_Bamboo")
+##PTY_Bamboo and PTY_Rubber being so close to 0.0 implies that when productivity in one of the plantations increases, the productivity of the other plantation decreases .
+#Now finding the  correlation between "PTY_Rubber" and "PTY_Tea".
+newDF.stat.corr("PTY_Rubber", "PTY_Tea")
+#The correlation between PTY_Tea and PTY_Rubber is very close to 1.0.
+#A correlation of 1.0 means there is a perfect positive relationship between the two variables. For a positive increase in one variable, there is also a positive increase in the second variable. 
+#PTY_Tea and PTY_Rubber being so close to 1.0 implies that when productivity in one of the plantations increases, the productivity of the other plantation increases as well.
+#Now finding the  correlation between "PTY_Bamboo" and "PTY_Tea".
+newDF.stat.corr("PTY_Tea", "PTY_Bamboo")
+#PTY_Bamboo and PTY_Tea being so close to 0.0 implies that when productivity in one of the plantations increases, the productivity of the other plantation decreases .
